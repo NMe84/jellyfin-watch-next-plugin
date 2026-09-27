@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Watch Next</title>
+</head>
+<body>
+
+<div id="WatchNextConfigPage" data-role="page" class="page type-interior pluginConfigurationPage">
+
+    <div class="content-primary">
+
+        <div class="verticalSection verticalSection-extrabottompadding">
+            <div class="sectionTitleContainer padded-left padded-right" style="margin-bottom:1em;">
+                <h2 class="sectionTitle">Watch Next</h2>
+            </div>
+
+            <div class="padded-left padded-right">
+                <p>
+                    Every user gets their own <strong>Watch Next</strong> entry in the navigation drawer,
+                    holding two ordered lists &mdash; one for movies, one for shows &mdash; that they
+                    arrange by dragging. The top of each list is what they want to watch next. An entry
+                    disappears by itself once it has been watched: a movie when playback finishes or it is
+                    ticked off by hand, a show as soon as any one of its episodes is.
+                </p>
+                <p>
+                    There is nothing to set up per user, and nothing here is required for the plugin to
+                    work. The settings below only affect how the drawer entry is presented.
+                </p>
+
+                <div id="wnDependency" class="informationContainer" style="margin:1em 0;padding:12px;
+                     border-radius:4px;background:var(--color-card-background, #202020);">
+                    <strong>Required:</strong> the <strong>File Transformation</strong> plugin by
+                    IAmParadox27, which is what lets this plugin place its entry in the navigation drawer.
+                    Jellyfin&rsquo;s plugin catalogue has no concept of dependencies, so it has to be
+                    installed by hand: add
+                    <code>https://www.iamparadox.dev/jellyfin/plugins/manifest.json</code> as a plugin
+                    repository, install <em>File Transformation</em>, and restart Jellyfin. Without it the
+                    lists and the API still work, but no drawer entry appears.
+                </div>
+
+                <form id="wnForm">
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="wnMenuLabel">Menu label</label>
+                        <input is="emby-input" type="text" id="wnMenuLabel" name="wnMenuLabel" required />
+                        <div class="fieldDescription">
+                            The wording used for the drawer entry and as the title of the page.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input is="emby-checkbox" type="checkbox" id="wnShowMenuItem" />
+                            <span>Show the entry in the navigation drawer</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Turn this off to stop injecting anything into the web client. Lists are kept,
+                            and the API stays available.
+                        </div>
+                    </div>
+
+                    <button is="emby-button" type="submit" class="raised button-submit block">
+                        <span>Save</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = 'c9e4b7a2-3f6d-4a51-8b2c-1d7e5f9a4c83';
+
+            function view() {
+                return document.querySelector('#WatchNextConfigPage');
+            }
+
+            document.querySelector('#WatchNextConfigPage').addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
+
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    view().querySelector('#wnMenuLabel').value = config.MenuLabel || 'Watch Next';
+                    view().querySelector('#wnShowMenuItem').checked = config.ShowMenuItem !== false;
+                    Dashboard.hideLoadingMsg();
+                });
+            });
+
+            document.querySelector('#wnForm').addEventListener('submit', function (event) {
+                event.preventDefault();
+                Dashboard.showLoadingMsg();
+
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    config.MenuLabel = view().querySelector('#wnMenuLabel').value.trim() || 'Watch Next';
+                    config.ShowMenuItem = view().querySelector('#wnShowMenuItem').checked;
+
+                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+
+                return false;
+            });
+        })();
+    </script>
+
+</div>
+
+</body>
+</html>

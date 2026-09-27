@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  release:
+    types: [ published ]
+
+permissions:
+  contents: write   # required to upload assets and push to gh-pages
+
+env:
+  DLL: Jellyfin.Plugin.WatchNext
+  GUID: c9e4b7a2-3f6d-4a51-8b2c-1d7e5f9a4c83
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from build.yaml
+        id: ver
+        run: |
+          VERSION=$(grep '^version:' build.yaml | grep -oP '"[^"]+"' | tr -d '"')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Baking version $VERSION into assembly"
+
+      # ONE build serves every supported Jellyfin. Compiled net10.0 against the
+      # oldest supported packages (12.0); Jellyfin's assemblies are not
+      # strong-named, so this binds on newer Jellyfin 12.x releases too.
+      - name: Build
+        run: |
+          dotnet build --configuration Release -p:JellyfinVersion=12.0.0 \
+            -p:Version=${{ steps.ver.outputs.version }} \
+            -p:AssemblyVersion=${{ steps.ver.outputs.version }} \
+            -p:FileVersion=${{ steps.ver.outputs.version }}
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          (cd bin/Release/net10.0 && zip -q "$GITHUB_WORKSPACE/dist/${DLL}.zip" "${DLL}.dll")
+          (cd dist && md5sum "${DLL}.zip" | awk '{print $1}' > "${DLL}.zip.md5")
+          ls -l dist
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" dist/* build.yaml --clobber
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: pages
+
+      - name: Update manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          CHANGELOG="$(gh release view "$TAG" --json body --jq .body)"
+          export CHANGELOG
+          export TARGET_ABI="$(grep '^targetAbi:' build.yaml | sed 's/^targetAbi:[[:space:]]*//; s/^"//; s/"$//')"
+          export PNAME="$(grep '^name:' build.yaml | sed 's/^name:[[:space:]]*//; s/^"//; s/"$//')"
+          export PDESC="$(grep '^description:' build.yaml | sed 's/^description:[[:space:]]*//; s/^"//; s/"$//')"
+          export POWNER="$(grep '^owner:' build.yaml | sed 's/^owner:[[:space:]]*//; s/^"//; s/"$//')"
+          export PCATEGORY="$(grep '^category:' build.yaml | sed 's/^category:[[:space:]]*//; s/^"//; s/"$//')"
+          export PIMAGE="$(grep '^imageUrl:' build.yaml | sed 's/^imageUrl:[[:space:]]*//; s/^"//; s/"$//')"
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib
+
+          version   = os.environ["VERSION"]
+          tag       = os.environ["TAG"]
+          repo      = os.environ["REPO"]
+          guid      = os.environ["GUID"]
+          dll       = os.environ["DLL"]
+          abi       = os.environ["TARGET_ABI"]
+          changelog = os.environ.get("CHANGELOG", "") or ""
+
+          man = pathlib.Path("pages/manifest.json")
+          data = json.loads(man.read_text()) if man.exists() else []
+
+          entry = next((p for p in data if str(p.get("guid", "")).lower() == guid.lower()), None)
+          if entry is None:
+              entry = {
+                  "category": os.environ.get("PCATEGORY", ""),
+                  "description": os.environ.get("PDESC", ""),
+                  "guid": guid,
+                  "imageUrl": os.environ.get("PIMAGE", ""),
+                  "name": os.environ.get("PNAME", ""),
+                  "overview": os.environ.get("PDESC", ""),
+                  "owner": os.environ.get("POWNER", ""),
+                  "versions": [],
+              }
+              data.append(entry)
+
+          asset = f"{dll}.zip"
+          row = {
+              "changelog": changelog,
+              "checksum": hashlib.md5(pathlib.Path("dist", asset).read_bytes()).hexdigest(),
+              "sourceUrl": f"https://github.com/{repo}/releases/download/{tag}/{asset}",
+              # targetAbi is the OLDEST supported Jellyfin. Jellyfin keeps any row
+              # where targetAbi <= server version, so this one row serves all of 12.x.
+              "targetAbi": abi,
+              "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "version": version,
+          }
+
+          # Re-releasing the same version replaces its row rather than duplicating.
+          entry["versions"] = [row] + [v for v in entry.get("versions", []) if v.get("version") != version]
+          man.write_text(json.dumps(data, indent=2) + "\n")
+          print(f"added {version} abi={abi} -> {row['sourceUrl']}")
+          PY
+
+      - name: Commit manifest
+        run: |
+          cd pages
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git diff --cached --quiet || git commit -m "Add ${{ steps.ver.outputs.version }}"
+          git push
+
+      - name: Trigger jellyfin-plugins aggregator
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.MANIFEST_REPO_PAT }}
+          repository: NMe84/jellyfin-plugins
+          event-type: plugin-released

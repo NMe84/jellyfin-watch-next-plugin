@@ -1,0 +1,23 @@
+---
+name: "Watch Next"
+guid: "c9e4b7a2-3f6d-4a51-8b2c-1d7e5f9a4c83"
+version: "1.0.0.0"
+# Jellyfin 12 and newer only: Jellyfin 12 moved to .NET 10, and this plugin is
+# built for net10.0, so it cannot load on 10.x at all. targetAbi is the OLDEST
+# supported server - Jellyfin keeps any manifest row where targetAbi <= its own
+# version, so this single row also serves 12.1 and later.
+targetAbi: "12.0.0.0"
+framework: "net10.0"
+description: "A personal, drag-and-drop ordered list of what each user wants to watch next"
+overview: >
+  Gives every user their own Watch Next entry in the navigation drawer, with two
+  ordered lists - one for movies, one for shows - that they arrange by dragging,
+  on desktop or on a phone. Whatever sits at the top is what they watch next.
+  Entries remove themselves once watched: a movie when playback finishes or it is
+  ticked off by hand, a show as soon as any one of its episodes is. Requires the
+  File Transformation plugin.
+imageUrl: "https://raw.githubusercontent.com/NMe84/jellyfin-watch-next-plugin/master/watchnext.png"
+owner: "nme84"
+category: "General"
+artifacts:
+  - "Jellyfin.Plugin.WatchNext.dll"
