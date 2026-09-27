@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.WatchNext.Models;
 using Jellyfin.Plugin.WatchNext.Services;
 using MediaBrowser.Controller.Entities;
@@ -39,11 +41,16 @@ public class WatchNextController : ControllerBase
     private const string ClientScriptResource = "Jellyfin.Plugin.WatchNext.Web.client.js";
 
     private readonly ILibraryManager _libraryManager;
+    private readonly IUserManager _userManager;
     private readonly WatchNextStore _store;
 
-    public WatchNextController(ILibraryManager libraryManager, WatchNextStore store)
+    public WatchNextController(
+        ILibraryManager libraryManager,
+        IUserManager userManager,
+        WatchNextStore store)
     {
         _libraryManager = libraryManager;
+        _userManager = userManager;
         _store = store;
     }
 
@@ -108,6 +115,60 @@ public class WatchNextController : ControllerBase
         return Ok(new { movies, series });
     }
 
+    /// <summary>
+    /// Searches the library for things the user could still add: movies and
+    /// shows only, minus anything already watched and anything already on one
+    /// of their lists.
+    ///
+    /// Searching runs here rather than against /Items in the browser so that
+    /// "already watched" is decided in exactly one place, and so the UI cannot
+    /// offer something the add would only reject.
+    /// </summary>
+    [HttpGet("Search")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> Search([FromQuery] string? term, [FromQuery] int limit = 20)
+    {
+        var userId = GetUserId();
+        if (userId == Guid.Empty)
+        {
+            return Unauthorized();
+        }
+
+        var user = _userManager.GetUserById(userId);
+        if (user is null)
+        {
+            return Unauthorized();
+        }
+
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var lists = _store.Get(userId);
+        var listed = new HashSet<Guid>(lists.Movies.Concat(lists.Series));
+
+        var query = new InternalItemsQuery(user)
+        {
+            SearchTerm = term,
+            IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Series },
+            Recursive = true,
+            // Ask for more than we return: watched and already-listed items are
+            // filtered out below, and that must not empty a full page of hits.
+            Limit = Math.Max(limit, 20) * 4
+        };
+
+        var matches = _libraryManager.GetItemList(query)
+            .Where(item => !listed.Contains(item.Id) && !IsWatched(item, user))
+            .OrderByDescending(item => StartsWith(item.Name, term))
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Take(limit)
+            .Select(ToDto)
+            .ToList();
+
+        return Ok(matches);
+    }
+
     /// <summary>Adds a movie or series to the bottom of the matching list.</summary>
     [HttpPost("Items/{itemId}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -117,6 +178,12 @@ public class WatchNextController : ControllerBase
     {
         var userId = GetUserId();
         if (userId == Guid.Empty)
+        {
+            return Unauthorized();
+        }
+
+        var user = _userManager.GetUserById(userId);
+        if (user is null)
         {
             return Unauthorized();
         }
@@ -131,6 +198,16 @@ public class WatchNextController : ControllerBase
         if (kind is null)
         {
             return BadRequest("Only movies and shows can be added to a Watch Next list.");
+        }
+
+        // The list is about what to watch next, so something already watched can
+        // never belong on it. The client filters these out of its search results
+        // too; this is the authoritative check.
+        if (IsWatched(item, user))
+        {
+            return BadRequest(kind == WatchNextKind.Series
+                ? "You have already started watching this show."
+                : "You have already watched this movie.");
         }
 
         var added = _store.Add(userId, itemId, kind.Value);
@@ -185,14 +262,64 @@ public class WatchNextController : ControllerBase
         _ => null
     };
 
+    private static bool StartsWith(string? name, string term)
+        => name is not null && name.StartsWith(term, StringComparison.CurrentCultureIgnoreCase);
+
     /// <summary>
-    /// Maps stored ids to display data, preserving list order and collecting
-    /// anything that no longer resolves.
+    /// Whether this user is done with the item for Watch Next purposes.
     ///
+    /// A movie counts as watched once it is marked played. A show counts as soon
+    /// as ANY single episode is played - the list answers "what do I start
+    /// next", so a show already begun is no longer a candidate. That matches
+    /// what the auto-removal service does when an episode finishes.
+    ///
+    /// Both answers come from a library query rather than from
+    /// IUserDataManager.GetUserData. In Jellyfin 12 that method does not read
+    /// the database: it inspects the UserData already attached to the entity,
+    /// which is only populated for items materialised through a user-scoped
+    /// query. An item fetched with GetItemById therefore always looks unwatched.
+    /// </summary>
+    private bool IsWatched(BaseItem item, User user)
+    {
+        var query = new InternalItemsQuery(user)
+        {
+            IsPlayed = true,
+            Limit = 1
+        };
+
+        if (item is Series series)
+        {
+            query.AncestorIds = new[] { series.Id };
+            query.IncludeItemTypes = new[] { BaseItemKind.Episode };
+            query.Recursive = true;
+        }
+        else
+        {
+            query.ItemIds = new[] { item.Id };
+        }
+
+        return _libraryManager.GetItemList(query).Count > 0;
+    }
+
+    /// <summary>
     /// Property names are spelled in camelCase explicitly through an anonymous
     /// type: Jellyfin serialises API responses with System.Text.Json using its
     /// own naming policy, and the client should not have to care which one is
     /// in effect.
+    /// </summary>
+    private static object ToDto(BaseItem item) => new
+    {
+        id = item.Id.ToString("N"),
+        name = item.Name,
+        year = item.ProductionYear,
+        type = item.GetType().Name,
+        hasImage = item.HasImage(ImageType.Primary),
+        hasThumb = item.HasImage(ImageType.Thumb)
+    };
+
+    /// <summary>
+    /// Maps stored ids to display data, preserving list order and collecting
+    /// anything that no longer resolves.
     /// </summary>
     private List<object> Resolve(IEnumerable<Guid> ids, List<Guid> missing)
     {
@@ -207,15 +334,7 @@ public class WatchNextController : ControllerBase
                 continue;
             }
 
-            result.Add(new
-            {
-                id = item.Id.ToString("N"),
-                name = item.Name,
-                year = item.ProductionYear,
-                type = item.GetType().Name,
-                hasImage = item.HasImage(ImageType.Primary),
-                hasThumb = item.HasImage(ImageType.Thumb)
-            });
+            result.Add(ToDto(item));
         }
 
         return result;

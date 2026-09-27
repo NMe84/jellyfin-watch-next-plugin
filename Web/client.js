@@ -4,8 +4,9 @@
  * Injected into the web client's index.html by the File Transformation plugin.
  * Two jobs:
  *
- *   1. Add a "Watch Next" entry to the normal navigation drawer, for every
- *      user, without needing admin dashboard access.
+ *   1. Add a "Watch Next" entry to the normal navigation, for every user and
+ *      without needing admin dashboard access - both to the drawer that narrow
+ *      viewports get and to the top bar that desktop and TV get instead.
  *   2. Render the page behind it: two independently ordered lists (movies and
  *      shows) with posters, links into the detail pages, and drag-and-drop
  *      reordering that also works with a finger.
@@ -16,7 +17,7 @@
  * cannot be broken by a web client update. The browser's back button still
  * closes it, because opening pushes a history entry.
  *
- * The drawer entry is built by cloning the existing "Home" entry and relabelling
+ * Each navigation entry is built by cloning a neighbouring one and relabelling
  * the copy, for the same reason: whatever markup and classes that version of the
  * web client uses, the clone already has them.
  */
@@ -33,11 +34,6 @@
         + 'style="display:block"><path d="M3 6h12v2H3V6zm0 4h12v2H3v-2zm0 4h8v2H3v-2zm13-1v7l6-3.5L16 13z"/></svg>';
 
     var settings = { menuLabel: 'Watch Next', showMenuItem: true };
-
-    // href of the drawer's Home entry, captured when we clone it. It tells us
-    // whether this web client routes on the hash (#/home.html) or on the path
-    // (/web/home), so we can build detail links in the same dialect.
-    var homeHref = null;
 
     var overlay = null;
     var searchTimer = null;
@@ -70,6 +66,23 @@
         });
     }
 
+    /**
+     * Pulls the server's own explanation out of a failed request so a rejected
+     * add can say why. ApiClient rejects with the Response where it can; when
+     * it does not, the caller falls back to a generic message.
+     */
+    function readError(error) {
+        if (error && typeof error.text === 'function') {
+            return error.text().then(function (text) {
+                return (text || '').replace(/^"|"$/g, '');
+            }, function () {
+                return '';
+            });
+        }
+
+        return Promise.resolve('');
+    }
+
     function escapeHtml(value) {
         return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -78,18 +91,27 @@
 
     /**
      * Builds a link to an item's detail page in whichever routing dialect this
-     * web client uses. Falls back to the hash form, which every Jellyfin web
-     * client has understood so far.
+     * web client uses.
+     *
+     * The dialect is read off the current URL rather than off a navigation link,
+     * because more than one navigation can be present at once - Jellyfin's
+     * legacy drawer sits in the page even while the modern app is on screen -
+     * and they do not agree: the legacy app routes on the hash (#/details), the
+     * modern one on the path (/web/details).
      */
     function detailsHref(itemId) {
         var serverId = (api().serverId && api().serverId()) || '';
-        var query = 'id=' + encodeURIComponent(itemId) + (serverId ? '&serverId=' + encodeURIComponent(serverId) : '');
+        var query = 'id=' + encodeURIComponent(itemId)
+            + (serverId ? '&serverId=' + encodeURIComponent(serverId) : '');
 
-        if (!homeHref || homeHref.charAt(0) === '#') {
+        if (window.location.hash.indexOf('#/') === 0) {
             return '#/details?' + query;
         }
 
-        return homeHref.replace(/\/home(\.html)?(\?.*)?$/, '/details') + '?' + query;
+        // Path routing: strip the current route off to get the app's base, which
+        // keeps this correct when the server is hosted under a base path.
+        var base = window.location.pathname.replace(/\/[^/]*$/, '');
+        return base + '/details?' + query;
     }
 
     // ------------------------------------------------------------------ style
@@ -148,25 +170,69 @@
         document.head.appendChild(style);
     }
 
-    // ------------------------------------------------------------- drawer item
+    // ------------------------------------------------------------- menu entry
 
-    /**
-     * Finds the drawer's Home entry. The classic web client renders it as an
-     * <a class="navMenuOption" href="#/home.html">, the React one as a MUI list
-     * item linking to /web/home.
+    /*
+     * Jellyfin shows its navigation in one of two places, and which one is in
+     * the DOM depends on the viewport: below the `md` breakpoint the React web
+     * client renders the sliding drawer, and from `md` up it renders none of it
+     * and puts the user views in the top toolbar instead. Desktop and TV are
+     * therefore toolbar-only - an entry added to the drawer alone is invisible
+     * there - so both places are handled, each tracked separately because a
+     * resize can swap which one exists.
+     *
+     * Each entry is a clone of a neighbouring one: in the drawer, of Home; in
+     * the toolbar, of Favourites. Cloning means the copy already carries
+     * whatever classes and structure that web client version uses, for both the
+     * classic and React apps, instead of us hard-coding markup that would rot.
      */
-    function findHomeLink() {
-        var selectors = [
-            '.mainDrawer a[href*="home.html"]',
-            '.navMenuOptions a[href*="home.html"]',
-            '.MuiDrawer-root a[href$="/home"]',
-            '.MuiDrawer-root a[href="/home"]',
-            '.MuiDrawer-root a[href*="home.html"]'
-        ];
+    var TARGETS = [
+        {
+            name: 'drawer',
+            // The modern app's sliding drawer.
+            selectors: [
+                '.MuiDrawer-root a[href$="/home"]',
+                '.MuiDrawer-root a[href="/home"]',
+                '.MuiDrawer-root a[href="#/home"]',
+                '.MuiDrawer-root a[href*="home.html"]'
+            ],
+            // Sits between Home and Favourites.
+            before: false
+        },
+        {
+            name: 'toolbar',
+            // Favourites is the first user-view button in the top bar. Scoped
+            // to the header so this never picks up the drawer's own Favourites.
+            selectors: [
+                'header a[href$="/home?tab=1"]',
+                '.MuiToolbar-root a[href$="/home?tab=1"]',
+                'header a[href$="home.html?tab=1"]'
+            ],
+            // Goes to the left of Favourites, matching the drawer's order.
+            before: true
+        },
+        {
+            name: 'legacy',
+            // Jellyfin's legacy app, which the TV layout runs at any width and
+            // which the Desktop/Mobile (legacy) layouts run too. Its drawer is
+            // built into the page even while the modern app is the one on
+            // screen, so it is a target of its own rather than a fallback -
+            // otherwise it would shadow the modern drawer above. Jellyfin 12
+            // links to "#/home"; older versions used "#/home.html".
+            selectors: [
+                '.mainDrawer a[href="#/home"]',
+                '.mainDrawer a[href*="home.html"]',
+                '.navMenuOptions a[href="#/home"]',
+                '.navMenuOptions a[href*="home.html"]'
+            ],
+            before: false
+        }
+    ];
 
-        for (var i = 0; i < selectors.length; i++) {
-            var found = document.querySelector(selectors[i]);
-            if (found) {
+    function findReference(target) {
+        for (var i = 0; i < target.selectors.length; i++) {
+            var found = document.querySelector(target.selectors[i]);
+            if (found && !found.closest('.' + MENU_CLASS)) {
                 return found;
             }
         }
@@ -174,21 +240,65 @@
         return null;
     }
 
-    function insertMenuItem() {
-        if (!settings.showMenuItem || document.querySelector('.' + MENU_CLASS)) {
+    /**
+     * Replaces a cloned entry's label. List items keep their text in a dedicated
+     * element; a toolbar button keeps it as a bare text node between the icon
+     * and the ripple, so setting textContent there would wipe both.
+     */
+    function setLabel(link, text) {
+        var labelEl = link.querySelector('.navMenuOptionText, .MuiListItemText-primary');
+        if (labelEl) {
+            labelEl.textContent = text;
             return;
         }
 
-        var home = findHomeLink();
-        if (!home) {
+        var done = false;
+        Array.prototype.slice.call(link.childNodes).forEach(function (node) {
+            if (node.nodeType !== 3 || !node.nodeValue.trim()) {
+                return;
+            }
+            node.nodeValue = done ? '' : text;
+            done = true;
+        });
+
+        if (!done) {
+            link.appendChild(document.createTextNode(text));
+        }
+    }
+
+    function setIcon(link) {
+        var host = link.querySelector('.MuiListItemIcon-root, .MuiButton-startIcon, .material-icons');
+        if (host) {
+            host.textContent = '';
+            host.innerHTML = ICON_SVG;
             return;
         }
 
-        homeHref = home.getAttribute('href');
+        var svg = link.querySelector('svg');
+        if (svg) {
+            svg.outerHTML = ICON_SVG;
+        }
+    }
 
-        var container = home.closest('li') || home;
+    function insertMenuItem(target) {
+        if (!settings.showMenuItem) {
+            return;
+        }
+
+        var existing = document.querySelector('.' + MENU_CLASS + '[data-wn-target="' + target.name + '"]');
+        if (existing && existing.isConnected) {
+            return;
+        }
+
+        var reference = findReference(target);
+        if (!reference) {
+            return;
+        }
+
+        var container = reference.closest('li') || reference;
         var clone = container.cloneNode(true);
         clone.classList.add(MENU_CLASS);
+        clone.setAttribute('data-wn-target', target.name);
 
         var link = clone.tagName === 'A' ? clone : clone.querySelector('a');
         if (!link) {
@@ -199,23 +309,11 @@
         link.removeAttribute('data-itemid');
         link.removeAttribute('aria-current');
         link.classList.remove('navMenuOptionSelected', 'Mui-selected');
+        // The reference may be the active entry, which MUI colours differently.
+        link.className = link.className.replace(/Primary\b/g, 'Inherit');
 
-        var label = link.querySelector('.navMenuOptionText, .MuiListItemText-primary');
-        if (label) {
-            label.textContent = settings.menuLabel;
-        } else {
-            link.textContent = settings.menuLabel;
-        }
-
-        var icon = link.querySelector('.MuiListItemIcon-root, .material-icons, svg');
-        if (icon) {
-            if (icon.tagName.toLowerCase() === 'svg') {
-                icon.outerHTML = ICON_SVG;
-            } else {
-                icon.textContent = '';
-                icon.innerHTML = ICON_SVG;
-            }
-        }
+        setLabel(link, settings.menuLabel);
+        setIcon(link);
 
         link.addEventListener('click', function (event) {
             event.preventDefault();
@@ -224,7 +322,15 @@
             open();
         });
 
-        container.parentNode.insertBefore(clone, container.nextSibling);
+        if (target.before) {
+            container.parentNode.insertBefore(clone, container);
+        } else {
+            container.parentNode.insertBefore(clone, container.nextSibling);
+        }
+    }
+
+    function insertMenuItems() {
+        TARGETS.forEach(insertMenuItem);
     }
 
     /** Dismisses the drawer by clicking its backdrop, as a tap outside would. */
@@ -236,10 +342,10 @@
     }
 
     /**
-     * The React web client re-renders the drawer whenever it opens, which drops
-     * our clone, so keep an eye on the DOM and put it back. insertMenuItem()
-     * returns immediately when the entry is already there, so the observer
-     * cannot trigger itself in a loop.
+     * The React web client re-renders the drawer and the toolbar as you navigate
+     * and resize, which drops our clones, so keep an eye on the DOM and put them
+     * back. insertMenuItem() returns immediately when its entry is already
+     * there, so the observer cannot trigger itself in a loop.
      */
     function watchForDrawer() {
         var pending = false;
@@ -251,12 +357,15 @@
             pending = true;
             window.setTimeout(function () {
                 pending = false;
-                insertMenuItem();
+                insertMenuItems();
             }, 150);
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
-        insertMenuItem();
+        // A resize can swap the drawer for the toolbar without touching the DOM
+        // in a way the observer would see fire usefully.
+        window.addEventListener("resize", insertMenuItems);
+        insertMenuItems();
     }
 
     // ----------------------------------------------------------------- overlay
@@ -418,14 +527,16 @@
                 return;
             }
 
-            // Following a detail link leaves this page, so drop the overlay -
-            // and with it our history entry - before the router takes over.
+            // Following a detail link leaves this page. Tear the overlay down
+            // and *replace* our pushed history entry with the destination, so
+            // going back from the detail page lands where the user opened the
+            // list from rather than bouncing through a stale overlay entry.
             var name = event.target.closest('.wn-name');
             if (name) {
                 event.preventDefault();
                 var href = name.getAttribute('href');
-                close();
-                window.location.href = href;
+                destroyOverlay();
+                window.location.replace(href);
             }
         });
     }
@@ -462,8 +573,10 @@
                 results.hidden = true;
                 results.innerHTML = '';
                 load();
-            }, function () {
-                showMessage('Could not add that item.');
+            }, function (error) {
+                readError(error).then(function (text) {
+                    showMessage(text || 'Could not add that item.');
+                });
             });
         });
 
@@ -478,45 +591,41 @@
         document.addEventListener('click', dismissResults);
     }
 
+    /**
+     * Searching goes through the plugin rather than straight to /Items so the
+     * server can leave out anything already watched, or already on one of the
+     * two lists. Deciding that here would mean a second definition of "watched"
+     * that could drift from the one the add endpoint enforces.
+     */
     function runSearch(term, results) {
         var sequence = ++searchSequence;
 
-        var url = api().getUrl('Items', {
-            userId: api().getCurrentUserId(),
-            searchTerm: term,
-            includeItemTypes: 'Movie,Series',
-            recursive: true,
-            limit: 20,
-            enableTotalRecordCount: false
-        });
-
-        api().getJSON(url).then(function (data) {
+        apiGet('WatchNext/Search?term=' + encodeURIComponent(term) + '&limit=20').then(function (items) {
             // A slower earlier request must not overwrite a newer result set.
             if (sequence !== searchSequence || !overlay) {
                 return;
             }
 
-            var items = data.Items || [];
-            if (items.length === 0) {
-                results.innerHTML = '<div class="wn-result" style="cursor:default;opacity:.6">No matches</div>';
+            if (!items || items.length === 0) {
+                results.innerHTML = '<div class="wn-result" style="cursor:default;opacity:.6">'
+                    + 'Nothing to add — no unwatched match</div>';
                 results.hidden = false;
                 return;
             }
 
             results.innerHTML = items.map(function (item) {
-                var tag = item.ImageTags && item.ImageTags.Primary;
-                var image = tag
-                    ? api().getUrl('Items/' + item.Id + '/Images/Primary', { maxHeight: 96, tag: tag })
-                    : '';
-                var sub = [item.Type === 'Series' ? 'Show' : 'Movie', item.ProductionYear]
+                var image = item.hasImage
+                    ? imageUrl(item.id, 'Primary', 96)
+                    : (item.hasThumb ? imageUrl(item.id, 'Thumb', 96) : '');
+                var sub = [item.type === 'Series' ? 'Show' : 'Movie', item.year]
                     .filter(Boolean).join(' · ');
 
                 return [
-                    '<button type="button" class="wn-result" data-id="' + escapeHtml(item.Id) + '">',
+                    '<button type="button" class="wn-result" data-id="' + escapeHtml(item.id) + '">',
                     image
                         ? '<img src="' + escapeHtml(image) + '" alt="" loading="lazy">'
                         : '<span style="width:32px;height:48px;display:inline-block"></span>',
-                    '<span><span>' + escapeHtml(item.Name) + '</span>',
+                    '<span><span>' + escapeHtml(item.name) + '</span>',
                     '<span class="wn-result-sub" style="display:block">' + escapeHtml(sub) + '</span></span>',
                     '</button>'
                 ].join('');

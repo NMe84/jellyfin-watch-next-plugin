@@ -9,6 +9,8 @@ The page is reachable from the normal navigation drawer, so **no admin dashboard
 - **Two lists, one page** — movies and shows are kept apart and ordered independently, so a long show backlog never buries the film you meant to watch tonight.
 - **Drag to reorder, on any device** — reordering uses pointer events rather than HTML5 drag-and-drop, which never fires on touch screens. Dragging works the same with a mouse or a finger, including auto-scrolling when you drag past the edge of the screen.
 - **Removes itself once watched** — a movie disappears when playback finishes *or* when you tick it off by hand; a show disappears as soon as **any** of its episodes is watched, since by then you have clearly started it. Un-watching something never puts it back.
+- **Only offers what you have not seen** — search leaves out anything you have already watched, any show you have already started, and anything already on one of your lists, so the list cannot fill up with things you are done with.
+- **Everywhere in the web client** — the entry appears in the navigation drawer on a phone, in the top bar on a desktop, and in the drawer of the TV layout, which runs Jellyfin's legacy app.
 - **Per user, private** — each list belongs to the user whose token made the request. The user id comes from the access token's claims, never from a parameter, so one user cannot see or edit another's list.
 - **Mobile-friendly** — the two lists sit side by side on a desktop and stack into one column on a phone.
 - **Poster and a link** — each row shows the poster (falling back to the thumbnail) and the title, which links straight to the item's detail page.
@@ -38,8 +40,8 @@ If the entry never shows up, check the server log for a line from `WatchNext` �
 
 ## Using it
 
-- Open **Watch Next** from the drawer.
-- Type in the search box to find a movie or show and pick it from the results; it is added to the bottom of the matching list, so it never displaces what you had already queued up next.
+- Open **Watch Next** from the navigation — the drawer on a phone or on the TV layout, the top bar on a desktop.
+- Type in the search box to find a movie or show and pick it from the results; it is added to the bottom of the matching list, so it never displaces what you had already queued up next. Only things you have not watched yet are offered.
 - Drag by the handle on the left of a row to move it. The new order is saved as soon as you let go.
 - Tap the title to jump to the item's detail page and play it.
 - Use the ✕ to drop something you no longer want; otherwise just watch it and it removes itself.
@@ -57,7 +59,9 @@ The dashboard page (**Dashboard → Watch Next**) only affects presentation — 
 
 Jellyfin's plugin pages are all rendered inside the admin dashboard, and there is no server-side extension point for a page ordinary users can reach. So the user-facing half of this plugin lives in the web client instead: the **File Transformation** plugin is asked to append a few lines to `index.html`, which fetch `client.js` from this plugin once a user is signed in.
 
-That script does two things. It clones the drawer's existing *Home* entry and relabels the copy — cloning rather than hand-building the markup means the entry automatically inherits whatever classes and structure that version of the web client uses, and it works on both the classic and the React web apps. And it draws the page itself as a full-screen overlay rather than registering a route, because Jellyfin's router is not a public extension point and its shape differs between those two apps. The browser's back button still closes the page, since opening it pushes a history entry.
+That script does two things. First, it adds the navigation entry — by cloning a neighbouring one and relabelling the copy, so it inherits whatever classes and structure that version of the web client uses instead of relying on hard-coded markup. There is more than one place to put it: below Jellyfin's `md` breakpoint the modern web app renders a sliding drawer, and above it the drawer is not in the page at all and the user views live in the top bar instead, which is what desktops and TVs see. The TV layout is different again — it runs Jellyfin's *legacy* app, with its own drawer and hash-based routing. All three are handled, and each is tracked separately, because resizing the window swaps which one exists.
+
+Second, it draws the page itself as a full-screen overlay rather than registering a route, because Jellyfin's router is not a public extension point and its shape differs between the two apps. The browser's back button still closes the page, since opening it pushes a history entry.
 
 Everything the page does goes through a small `[Authorize]` API on the server (`/WatchNext/...`), which resolves the stored ids against the library, drops anything that has since been deleted, and persists the two orders. A background service listens for watch-state changes and takes finished items off the list.
 

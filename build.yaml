@@ -1,7 +1,7 @@
 ---
 name: "Watch Next"
 guid: "c9e4b7a2-3f6d-4a51-8b2c-1d7e5f9a4c83"
-version: "1.0.0.0"
+version: "1.0.1.0"
 # Jellyfin 12 and newer only: Jellyfin 12 moved to .NET 10, and this plugin is
 # built for net10.0, so it cannot load on 10.x at all. targetAbi is the OLDEST
 # supported server - Jellyfin keeps any manifest row where targetAbi <= its own
