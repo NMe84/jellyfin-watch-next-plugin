@@ -1,1 +1,21 @@
-[]
+[
+  {
+    "category": "General",
+    "description": "A personal, drag-and-drop ordered list of what each user wants to watch next",
+    "guid": "c9e4b7a2-3f6d-4a51-8b2c-1d7e5f9a4c83",
+    "imageUrl": "https://raw.githubusercontent.com/NMe84/jellyfin-watch-next-plugin/master/watchnext.png",
+    "name": "Watch Next",
+    "overview": "A personal, drag-and-drop ordered list of what each user wants to watch next",
+    "owner": "nme84",
+    "versions": [
+      {
+        "changelog": "First release.\n\nEvery user gets their own **Watch Next** entry in the navigation drawer \u2014 no admin dashboard access needed \u2014 holding two separately ordered lists, one for movies and one for shows.\n\n- Drag to reorder, with a mouse or a finger. Reordering uses pointer events rather than HTML5 drag-and-drop, which never fires on touch screens, and auto-scrolls when you drag past the edge of the screen.\n- Entries remove themselves once watched: a movie when playback finishes or when it is ticked off by hand, a show as soon as **any** of its episodes is watched. Un-watching never puts anything back.\n- Each row shows the poster (falling back to the thumbnail) and a title that links to the item's detail page.\n- The two lists sit side by side on a desktop and stack into one column on a phone.\n- Lists are private per user and are stored outside the plugin's version-stamped folder, so updating the plugin does not wipe them.\n\n**Requires Jellyfin 12.0 or newer**, and the [File Transformation](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation) plugin, which is what lets this plugin add its drawer entry. Jellyfin's catalogue has no concept of dependencies, so install that one first from `https://www.iamparadox.dev/jellyfin/plugins/manifest.json`.",
+        "checksum": "2e5b4f255124768f50448a254d9b5ccf",
+        "sourceUrl": "https://github.com/NMe84/jellyfin-watch-next-plugin/releases/download/v1.0.0/Jellyfin.Plugin.WatchNext.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-09-27T14:15:18Z",
+        "version": "1.0.0.0"
+      }
+    ]
+  }
+]
