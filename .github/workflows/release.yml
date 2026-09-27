@@ -14,6 +14,10 @@ env:
 jobs:
   package:
     runs-on: ubuntu-latest
+    env:
+      # Job level, because the secrets context is not available at workflow level
+      # and a step cannot test an env var it defines itself.
+      MANIFEST_PAT: ${{ secrets.MANIFEST_REPO_PAT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -129,7 +133,12 @@ jobs:
           git diff --cached --quiet || git commit -m "Add ${{ steps.ver.outputs.version }}"
           git push
 
+      # Refreshing the combined catalogue means writing to another repository,
+      # which needs a PAT this one may not have. Skip rather than fail: the
+      # release and this repo's own manifest are already complete, and the
+      # aggregator can be run by hand from NMe84/jellyfin-plugins.
       - name: Trigger jellyfin-plugins aggregator
+        if: env.MANIFEST_PAT != ''
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.MANIFEST_REPO_PAT }}
