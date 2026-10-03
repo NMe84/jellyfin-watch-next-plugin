@@ -63,6 +63,8 @@ That script does two things. First, it adds the navigation entry — by cloning 
 
 Second, it draws the page itself as a full-screen overlay rather than registering a route, because Jellyfin's router is not a public extension point and its shape differs between the two apps. The browser's back button still closes the page, since opening it pushes a history entry.
 
+That overlay is a modal `<dialog>`, which matters more than it sounds. On a phone the page is opened from the navigation drawer, and that drawer is a MUI modal with a focus trap: anything that takes focus outside it gets focus handed straight back. A plain overlay was therefore unusable on touch — you could see the search box, but tapping it returned focus to the drawer and nothing could be typed. A modal `<dialog>` is placed in the browser's top layer, which makes everything outside it inert, so the drawer's attempt to grab focus back does nothing.
+
 Everything the page does goes through a small `[Authorize]` API on the server (`/WatchNext/...`), which resolves the stored ids against the library, drops anything that has since been deleted, and persists the two orders. A background service listens for watch-state changes and takes finished items off the list.
 
 Because there is no NuGet package for File Transformation — and because plugins can end up with their own copies of `Newtonsoft.Json` in separate load contexts — the registration call is made entirely by reflection, building the payload out of File Transformation's *own* `JObject` type. That means this plugin carries no JSON dependency of its own, and retries for a couple of minutes in case Jellyfin happens to load File Transformation after it.

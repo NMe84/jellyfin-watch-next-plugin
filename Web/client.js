@@ -124,8 +124,14 @@
         var style = document.createElement('style');
         style.id = 'wn-styles';
         style.textContent = [
-            '.wn-overlay{position:fixed;inset:0;z-index:100000;background:#101418;color:#f2f2f2;',
+            // A <dialog>, so the explicit sizing and reset: user-agent styles
+            // centre it and cap its size, and a dialog has its own border and
+            // padding.
+            '.wn-overlay{position:fixed;inset:0;z-index:100000;width:100%;height:100%;',
+            'max-width:100%;max-height:100%;margin:0;padding:0;border:0;',
+            'background:#101418;color:#f2f2f2;',
             'overflow-y:auto;-webkit-overflow-scrolling:touch;font-size:15px;}',
+            '.wn-overlay::backdrop{background:#101418;}',
             '.wn-panel{max-width:1100px;margin:0 auto;padding:0 16px 48px;}',
             '.wn-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;',
             'padding:14px 0;background:#101418;border-bottom:1px solid rgba(255,255,255,.12);}',
@@ -333,9 +339,19 @@
         TARGETS.forEach(insertMenuItem);
     }
 
-    /** Dismisses the drawer by clicking its backdrop, as a tap outside would. */
+    /**
+     * Dismisses the navigation the entry was tapped in, as a tap outside would.
+     *
+     * The drawer's OWN backdrop has to be targeted. The page holds several MUI
+     * modals at once (menus and popovers, kept mounted and hidden), so a plain
+     * '.MuiBackdrop-root' lookup usually returns a hidden popover's backdrop
+     * instead, clicks nothing, and leaves the drawer open - with its focus trap
+     * still running.
+     */
     function closeDrawer() {
-        var backdrop = document.querySelector('.MuiBackdrop-root, .drawer-backdrop, .backdrop');
+        var backdrop = document.querySelector('.MuiDrawer-root .MuiBackdrop-root')
+            || document.querySelector('.drawer-backdrop, .backdrop');
+
         if (backdrop) {
             backdrop.click();
         }
@@ -377,7 +393,7 @@
 
         injectStyles();
 
-        overlay = document.createElement('div');
+        overlay = document.createElement('dialog');
         overlay.className = 'wn-overlay';
         overlay.innerHTML = [
             '<div class="wn-panel">',
@@ -411,6 +427,30 @@
         overlay.querySelector('.wn-close').addEventListener('click', close);
 
         document.body.appendChild(overlay);
+
+        /*
+         * Opened as a modal <dialog> so the browser puts it in the top layer and
+         * makes everything outside it inert.
+         *
+         * That is what keeps the search box usable. Jellyfin's drawer is a MUI
+         * modal with a focus trap, and on a phone the drawer is exactly how this
+         * page gets opened. Its trap reacts to focus landing outside itself by
+         * calling focus() on its own panel, so tapping into a plain overlay
+         * handed focus straight back to the drawer and nothing could be typed.
+         * Against an inert drawer that focus() call does nothing.
+         */
+        if (typeof overlay.showModal === 'function') {
+            overlay.showModal();
+            overlay.addEventListener('cancel', function (event) {
+                // Escape would close the dialog behind our back, stranding the
+                // history entry that open() pushed; close it ourselves instead.
+                event.preventDefault();
+                close();
+            });
+        } else {
+            overlay.open = true;
+        }
+
         document.body.style.overflow = 'hidden';
 
         bindSearch();
@@ -449,6 +489,12 @@
         if (dismissResults) {
             document.removeEventListener("click", dismissResults);
             dismissResults = null;
+        }
+
+        // Leave the top layer before detaching, so the page outside stops being
+        // inert even if something still holds a reference to the element.
+        if (overlay.open && typeof overlay.close === 'function') {
+            overlay.close();
         }
 
         overlay.remove();
