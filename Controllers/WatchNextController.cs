@@ -13,6 +13,7 @@ using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.WatchNext.Controllers;
 
@@ -43,15 +44,18 @@ public class WatchNextController : ControllerBase
     private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
     private readonly WatchNextStore _store;
+    private readonly ILogger<WatchNextController> _logger;
 
     public WatchNextController(
         ILibraryManager libraryManager,
         IUserManager userManager,
-        WatchNextStore store)
+        WatchNextStore store,
+        ILogger<WatchNextController> logger)
     {
         _libraryManager = libraryManager;
         _userManager = userManager;
         _store = store;
+        _logger = logger;
     }
 
     /// <summary>
@@ -115,6 +119,12 @@ public class WatchNextController : ControllerBase
         return Ok(new { movies, series });
     }
 
+    /// <summary>
+    /// How many exact-title hits to look up. More than one because a movie and
+    /// a show can share a title.
+    /// </summary>
+    private const int ExactMatchLimit = 10;
+
     /// <summary>How many unaddable-but-matching items to report back per search.</summary>
     private const int ExplainedExclusions = 8;
 
@@ -162,21 +172,45 @@ public class WatchNextController : ControllerBase
         var lists = _store.Get(userId);
         var listed = new HashSet<Guid>(lists.Movies.Concat(lists.Series));
 
-        var query = new InternalItemsQuery(user)
+        var types = new[] { BaseItemKind.Movie, BaseItemKind.Series };
+
+        var search = new InternalItemsQuery(user)
         {
             SearchTerm = term,
-            IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Series },
+            IncludeItemTypes = types,
             Recursive = true,
             // Ask for more than we return, since some matches turn out to be
             // unaddable and that must not empty a page of otherwise good hits.
             Limit = Math.Max(limit, 20) * 4
         };
 
-        // Jellyfin already returns search hits in relevance order, so the title
-        // actually being searched for is in this set even when the term is a
-        // substring of many others. Re-rank only to put a whole-title match and
-        // then prefix matches first, which keeps short titles at the top.
-        var candidates = _libraryManager.GetItemList(query)
+        // An item whose title IS what was typed is looked up directly as well,
+        // rather than trusting it to surface out of the search above. That query
+        // is capped and ordered by Jellyfin's own relevance scoring, neither of
+        // which this plugin controls, and a short title like "WAR" competes with
+        // every "Warrior" and "Edward" in the library for those slots.
+        //
+        // It runs twice because Jellyfin matches names two different ways: the
+        // default compares a normalised CleanName, while UseRawName compares the
+        // stored title. An item whose CleanName was never filled in is invisible
+        // to the first and to the search above, but still found by the second.
+        var candidates = Lookup(new InternalItemsQuery(user)
+            {
+                Name = term,
+                IncludeItemTypes = types,
+                Recursive = true,
+                Limit = ExactMatchLimit
+            })
+            .Concat(Lookup(new InternalItemsQuery(user)
+            {
+                Name = term,
+                UseRawName = true,
+                IncludeItemTypes = types,
+                Recursive = true,
+                Limit = ExactMatchLimit
+            }))
+            .Concat(Lookup(search))
+            .DistinctBy(item => item.Id)
             .OrderBy(item => Rank(item.Name, term))
             .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase);
 
@@ -221,6 +255,24 @@ public class WatchNextController : ControllerBase
 
     /// <summary>One search hit, with what is needed to order it.</summary>
     private sealed record SearchHit(int Rank, bool Blocked, string Name, object Dto);
+
+    /// <summary>
+    /// Runs a library query, treating a failure as "no matches" rather than
+    /// failing the whole search. The exact-title lookups are belt and braces
+    /// for the substring search and must not be able to break it.
+    /// </summary>
+    private IReadOnlyList<BaseItem> Lookup(InternalItemsQuery query)
+    {
+        try
+        {
+            return _libraryManager.GetItemList(query);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "WatchNext: a library search query failed");
+            return Array.Empty<BaseItem>();
+        }
+    }
 
     /// <summary>
     /// Why this item cannot be added, or null when it can be.
