@@ -124,6 +124,11 @@
         var style = document.createElement('style');
         style.id = 'wn-styles';
         style.textContent = [
+            // Must come first and win: the rules below give elements a display
+            // value, and a class selector outranks the browser's own
+            // [hidden]{display:none}. Without this the spinners, which are
+            // hidden by that attribute, were permanently on screen.
+            '.wn-overlay [hidden]{display:none !important;}',
             // A <dialog>, so the explicit sizing and reset: user-agent styles
             // centre it and cap its size, and a dialog has its own border and
             // padding.

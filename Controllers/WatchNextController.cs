@@ -209,10 +209,13 @@ public class WatchNextController : ControllerBase
                 Recursive = true,
                 Limit = ExactMatchLimit
             }))
-            .Concat(Lookup(search))
+            // Deliberately not wrapped: this is the search itself, and a failure
+            // here has to surface as an error rather than as "nothing matched".
+            .Concat(_libraryManager.GetItemList(search))
             .DistinctBy(item => item.Id)
             .OrderBy(item => Rank(item.Name, term))
-            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase);
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
 
         var addable = new List<SearchHit>();
         var excluded = new List<SearchHit>();
@@ -238,6 +241,17 @@ public class WatchNextController : ControllerBase
             {
                 excluded.Add(new SearchHit(rank, true, item.Name ?? string.Empty, ToSearchDto(item, reason)));
             }
+        }
+
+        // A search that finds nothing at all is the one failure the UI cannot
+        // explain by itself, so record what the server actually saw. Logged only
+        // when empty, which keeps it out of the way the rest of the time.
+        if (addable.Count == 0 && excluded.Count == 0)
+        {
+            _logger.LogInformation(
+                "WatchNext: search for {Term} returned nothing to show ({Candidates} library matches considered)",
+                term,
+                candidates.Count);
         }
 
         // Relevance decides the order, and only within one tier does an addable
