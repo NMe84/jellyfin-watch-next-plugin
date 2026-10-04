@@ -115,14 +115,28 @@ public class WatchNextController : ControllerBase
         return Ok(new { movies, series });
     }
 
+    /// <summary>How many unaddable-but-matching items to report back per search.</summary>
+    private const int ExplainedExclusions = 8;
+
     /// <summary>
-    /// Searches the library for things the user could still add: movies and
-    /// shows only, minus anything already watched and anything already on one
-    /// of their lists.
+    /// Only relevant matches are worth explaining. A title the term merely
+    /// appears inside ("Edward" for "war") is noise; one that is the title, or
+    /// starts it, or starts a word in it ("Star Wars") is what was searched for.
+    /// </summary>
+    private const int ExplainableRank = 2;
+
+    /// <summary>
+    /// Searches the library for movies and shows the user could add.
     ///
     /// Searching runs here rather than against /Items in the browser so that
     /// "already watched" is decided in exactly one place, and so the UI cannot
     /// offer something the add would only reject.
+    ///
+    /// Matches that cannot be added are not dropped silently - a few of them
+    /// come back carrying the reason. Dropping them made the feature look
+    /// broken: searching for a show you had started returned a page of titles
+    /// that merely contained the same letters, with no sign of the one you
+    /// actually asked for.
     /// </summary>
     [HttpGet("Search")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -153,20 +167,77 @@ public class WatchNextController : ControllerBase
             SearchTerm = term,
             IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Series },
             Recursive = true,
-            // Ask for more than we return: watched and already-listed items are
-            // filtered out below, and that must not empty a full page of hits.
+            // Ask for more than we return, since some matches turn out to be
+            // unaddable and that must not empty a page of otherwise good hits.
             Limit = Math.Max(limit, 20) * 4
         };
 
-        var matches = _libraryManager.GetItemList(query)
-            .Where(item => !listed.Contains(item.Id) && !IsWatched(item, user))
-            .OrderByDescending(item => StartsWith(item.Name, term))
-            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Take(limit)
-            .Select(ToDto)
-            .ToList();
+        // Jellyfin already returns search hits in relevance order, so the title
+        // actually being searched for is in this set even when the term is a
+        // substring of many others. Re-rank only to put a whole-title match and
+        // then prefix matches first, which keeps short titles at the top.
+        var candidates = _libraryManager.GetItemList(query)
+            .OrderBy(item => Rank(item.Name, term))
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase);
 
-        return Ok(matches);
+        var addable = new List<SearchHit>();
+        var excluded = new List<SearchHit>();
+
+        foreach (var item in candidates)
+        {
+            if (addable.Count >= limit && excluded.Count >= ExplainedExclusions)
+            {
+                break;
+            }
+
+            var rank = Rank(item.Name, term);
+            var reason = ExclusionReason(item, user, listed);
+
+            if (reason is null)
+            {
+                if (addable.Count < limit)
+                {
+                    addable.Add(new SearchHit(rank, false, item.Name ?? string.Empty, ToSearchDto(item, null)));
+                }
+            }
+            else if (excluded.Count < ExplainedExclusions && rank <= ExplainableRank)
+            {
+                excluded.Add(new SearchHit(rank, true, item.Name ?? string.Empty, ToSearchDto(item, reason)));
+            }
+        }
+
+        // Relevance decides the order, and only within one tier does an addable
+        // hit come before an explained one. So the title actually searched for
+        // leads even when it cannot be added - appending the explained hits
+        // instead buried an exact match behind twenty incidental ones, which is
+        // the same invisibility as dropping it.
+        return Ok(addable.Concat(excluded)
+            .OrderBy(hit => hit.Rank)
+            .ThenBy(hit => hit.Blocked)
+            .ThenBy(hit => hit.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Select(hit => hit.Dto)
+            .ToList());
+    }
+
+    /// <summary>One search hit, with what is needed to order it.</summary>
+    private sealed record SearchHit(int Rank, bool Blocked, string Name, object Dto);
+
+    /// <summary>
+    /// Why this item cannot be added, or null when it can be.
+    /// </summary>
+    private string? ExclusionReason(BaseItem item, User user, HashSet<Guid> listed)
+    {
+        if (listed.Contains(item.Id))
+        {
+            return "Already on your list";
+        }
+
+        if (IsWatched(item, user))
+        {
+            return item is Series ? "Already started watching" : "Already watched";
+        }
+
+        return null;
     }
 
     /// <summary>Adds a movie or series to the bottom of the matching list.</summary>
@@ -262,8 +333,32 @@ public class WatchNextController : ControllerBase
         _ => null
     };
 
-    private static bool StartsWith(string? name, string term)
-        => name is not null && name.StartsWith(term, StringComparison.CurrentCultureIgnoreCase);
+    /// <summary>
+    /// Search relevance, lowest first: the whole title, then a title starting
+    /// with the term, then the term appearing as its own word, then anything
+    /// else that merely contains those letters. Without the first tier a short
+    /// title like "WAR" sits among every "Warrior" and "Edward" in the library.
+    /// </summary>
+    private static int Rank(string? name, string term)
+    {
+        if (name is null)
+        {
+            return 3;
+        }
+
+        if (string.Equals(name, term, StringComparison.CurrentCultureIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (name.StartsWith(term, StringComparison.CurrentCultureIgnoreCase))
+        {
+            return 1;
+        }
+
+        var index = name.IndexOf(term, StringComparison.CurrentCultureIgnoreCase);
+        return index > 0 && !char.IsLetterOrDigit(name[index - 1]) ? 2 : 3;
+    }
 
     /// <summary>
     /// Whether this user is done with the item for Watch Next purposes.
@@ -315,6 +410,20 @@ public class WatchNextController : ControllerBase
         type = item.GetType().Name,
         hasImage = item.HasImage(ImageType.Primary),
         hasThumb = item.HasImage(ImageType.Thumb)
+    };
+
+    /// <summary>
+    /// A search hit, carrying the reason it cannot be added when there is one.
+    /// </summary>
+    private static object ToSearchDto(BaseItem item, string? reason) => new
+    {
+        id = item.Id.ToString("N"),
+        name = item.Name,
+        year = item.ProductionYear,
+        type = item.GetType().Name,
+        hasImage = item.HasImage(ImageType.Primary),
+        hasThumb = item.HasImage(ImageType.Thumb),
+        reason
     };
 
     /// <summary>

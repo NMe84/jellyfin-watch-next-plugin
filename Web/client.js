@@ -140,15 +140,27 @@
             'display:flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;}',
             '.wn-iconbtn:hover{background:rgba(255,255,255,.12);}',
             '.wn-add{position:relative;margin:16px 0 8px;}',
-            '.wn-search{width:100%;box-sizing:border-box;padding:12px 14px;font-size:1em;color:inherit;',
-            'background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;}',
+            // Room on the right for the spinner so typed text never runs under it.
+            '.wn-search{width:100%;box-sizing:border-box;padding:12px 42px 12px 14px;font-size:1em;',
+            'color:inherit;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);',
+            'border-radius:6px;}',
             '.wn-search:focus{outline:none;border-color:#00a4dc;}',
+            '.wn-spin{display:inline-block;flex:0 0 auto;width:18px;height:18px;border-radius:50%;',
+            'border:2px solid rgba(255,255,255,.25);border-top-color:#00a4dc;',
+            'animation:wn-rotate .7s linear infinite;}',
+            '@keyframes wn-rotate{to{transform:rotate(360deg);}}',
+            '.wn-add .wn-spin{position:absolute;right:12px;top:50%;margin-top:-9px;}',
+            '.wn-loading{display:flex;align-items:center;gap:10px;padding:18px 0;opacity:.7;}',
             '.wn-results{position:absolute;left:0;right:0;top:100%;z-index:3;margin-top:4px;max-height:60vh;',
             'overflow-y:auto;background:#1c2026;border:1px solid rgba(255,255,255,.18);border-radius:6px;',
             'box-shadow:0 8px 24px rgba(0,0,0,.6);}',
             '.wn-result{display:flex;align-items:center;gap:12px;padding:8px 12px;cursor:pointer;',
             'background:none;border:0;width:100%;text-align:left;color:inherit;font:inherit;}',
             '.wn-result:hover,.wn-result:focus{background:rgba(255,255,255,.1);outline:none;}',
+            // A match that cannot be added: shown, but visibly inert.
+            '.wn-result[disabled]{cursor:default;opacity:.5;}',
+            '.wn-result[disabled]:hover{background:none;}',
+            '.wn-result-reason{color:#e5a50a;}',
             '.wn-result img{width:32px;height:48px;object-fit:cover;border-radius:3px;background:rgba(255,255,255,.1);}',
             '.wn-result-sub{opacity:.6;font-size:.85em;}',
             '.wn-columns{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px;}',
@@ -407,7 +419,11 @@
             '  <div class="wn-add">',
             '    <input class="wn-search" type="search" autocomplete="off" spellcheck="false"',
             '           placeholder="Search for a movie or show to add…">',
+            '    <span class="wn-spin wn-searching" hidden aria-hidden="true"></span>',
             '    <div class="wn-results" hidden></div>',
+            '  </div>',
+            '  <div class="wn-loading" hidden>',
+            '    <span class="wn-spin" aria-hidden="true"></span><span>Loading your list…</span>',
             '  </div>',
             '  <div class="wn-columns">',
             '    <section class="wn-col"><h2>Movies</h2>',
@@ -513,12 +529,28 @@
 
     // -------------------------------------------------------------------- data
 
+    /** Shows or hides one of the spinners. */
+    function busy(selector, on) {
+        if (!overlay) {
+            return;
+        }
+
+        var el = overlay.querySelector(selector);
+        if (el) {
+            el.hidden = !on;
+        }
+    }
+
     function load() {
+        busy('.wn-loading', true);
+
         apiGet('WatchNext/List').then(function (data) {
+            busy('.wn-loading', false);
             renderList('Movie', data.movies || []);
             renderList('Series', data.series || []);
             showMessage('');
         }, function () {
+            busy('.wn-loading', false);
             showMessage('Could not load your list. Please try again.');
         });
     }
@@ -598,10 +630,16 @@
             var term = input.value.trim();
 
             if (term.length < 2) {
+                busy('.wn-searching', false);
                 results.hidden = true;
                 results.innerHTML = '';
                 return;
             }
+
+            // Show the spinner now rather than when the request goes out: the
+            // debounce below is itself part of the wait, and in a big library
+            // silence here reads as nothing happening.
+            busy('.wn-searching', true);
 
             searchTimer = window.setTimeout(function () {
                 runSearch(term, results);
@@ -652,9 +690,11 @@
                 return;
             }
 
+            busy('.wn-searching', false);
+
             if (!items || items.length === 0) {
                 results.innerHTML = '<div class="wn-result" style="cursor:default;opacity:.6">'
-                    + 'Nothing to add — no unwatched match</div>';
+                    + 'No match in your library</div>';
                 results.hidden = false;
                 return;
             }
@@ -666,19 +706,30 @@
                 var sub = [item.type === 'Series' ? 'Show' : 'Movie', item.year]
                     .filter(Boolean).join(' · ');
 
+                // A match carrying a reason is one that cannot be added. Show it
+                // anyway, greyed out and saying why - dropping it silently made
+                // searching for something already watched look broken.
+                var blocked = !!item.reason;
+
                 return [
-                    '<button type="button" class="wn-result" data-id="' + escapeHtml(item.id) + '">',
+                    '<button type="button" class="wn-result" data-id="' + escapeHtml(item.id) + '"'
+                        + (blocked ? ' disabled' : '') + '>',
                     image
                         ? '<img src="' + escapeHtml(image) + '" alt="" loading="lazy">'
                         : '<span style="width:32px;height:48px;display:inline-block"></span>',
                     '<span><span>' + escapeHtml(item.name) + '</span>',
-                    '<span class="wn-result-sub" style="display:block">' + escapeHtml(sub) + '</span></span>',
+                    '<span class="wn-result-sub" style="display:block">' + escapeHtml(sub),
+                    blocked
+                        ? ' · <span class="wn-result-reason">' + escapeHtml(item.reason) + '</span>'
+                        : '',
+                    '</span></span>',
                     '</button>'
                 ].join('');
             }).join('');
 
             results.hidden = false;
         }, function () {
+            busy('.wn-searching', false);
             showMessage('Search failed.');
         });
     }

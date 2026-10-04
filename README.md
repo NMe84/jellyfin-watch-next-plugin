@@ -9,7 +9,8 @@ The page is reachable from the normal navigation drawer, so **no admin dashboard
 - **Two lists, one page** — movies and shows are kept apart and ordered independently, so a long show backlog never buries the film you meant to watch tonight.
 - **Drag to reorder, on any device** — reordering uses pointer events rather than HTML5 drag-and-drop, which never fires on touch screens. Dragging works the same with a mouse or a finger, including auto-scrolling when you drag past the edge of the screen.
 - **Removes itself once watched** — a movie disappears when playback finishes *or* when you tick it off by hand; a show disappears as soon as **any** of its episodes is watched, since by then you have clearly started it. Un-watching something never puts it back.
-- **Only offers what you have not seen** — search leaves out anything you have already watched, any show you have already started, and anything already on one of your lists, so the list cannot fill up with things you are done with.
+- **Only offers what you have not seen** — anything you have already watched, any show you have already started, and anything already on one of your lists cannot be added, so the list cannot fill up with things you are done with. Those matches still *appear* in the search results, greyed out and saying why, rather than vanishing and leaving you wondering where the title went.
+- **Tells you when it is working** — a spinner while the list loads and while a search runs, which matters on a large library where the wait is noticeable.
 - **Everywhere in the web client** — the entry appears in the navigation drawer on a phone, in the top bar on a desktop, and in the drawer of the TV layout, which runs Jellyfin's legacy app.
 - **Per user, private** — each list belongs to the user whose token made the request. The user id comes from the access token's claims, never from a parameter, so one user cannot see or edit another's list.
 - **Mobile-friendly** — the two lists sit side by side on a desktop and stack into one column on a phone.
@@ -41,7 +42,7 @@ If the entry never shows up, check the server log for a line from `WatchNext` �
 ## Using it
 
 - Open **Watch Next** from the navigation — the drawer on a phone or on the TV layout, the top bar on a desktop.
-- Type in the search box to find a movie or show and pick it from the results; it is added to the bottom of the matching list, so it never displaces what you had already queued up next. Only things you have not watched yet are offered.
+- Type in the search box to find a movie or show and pick it from the results; it is added to the bottom of the matching list, so it never displaces what you had already queued up next. A result shown greyed out cannot be added, and says why — usually because you have already watched it, or already started the show.
 - Drag by the handle on the left of a row to move it. The new order is saved as soon as you let go.
 - Tap the title to jump to the item's detail page and play it.
 - Use the ✕ to drop something you no longer want; otherwise just watch it and it removes itself.
